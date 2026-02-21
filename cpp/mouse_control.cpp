@@ -7,6 +7,17 @@
 #define EXPORT extern "C"
 #endif
 
+// Helper to send input on Windows
+#ifdef _WIN32
+void send_mouse_input(DWORD flags, DWORD data = 0) {
+    INPUT input = {0};
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = flags;
+    input.mi.mouseData = data;
+    SendInput(1, &input, sizeof(INPUT));
+}
+#endif
+
 EXPORT void move_mouse(int x, int y) {
 #ifdef _WIN32
     SetCursorPos(x, y);
@@ -20,8 +31,8 @@ EXPORT void move_mouse(int x, int y) {
 
 EXPORT void click_mouse() {
 #ifdef _WIN32
-    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    send_mouse_input(MOUSEEVENTF_LEFTDOWN);
+    send_mouse_input(MOUSEEVENTF_LEFTUP);
 #else
     Display *d = XOpenDisplay(0);
     XTestFakeButtonEvent(d, 1, True, CurrentTime);
@@ -33,8 +44,8 @@ EXPORT void click_mouse() {
 
 EXPORT void right_click_mouse() {
 #ifdef _WIN32
-    mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
-    mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
+    send_mouse_input(MOUSEEVENTF_RIGHTDOWN);
+    send_mouse_input(MOUSEEVENTF_RIGHTUP);
 #else
     Display *d = XOpenDisplay(0);
     XTestFakeButtonEvent(d, 3, True, CurrentTime);
@@ -51,7 +62,7 @@ EXPORT void double_click_mouse() {
 
 EXPORT void scroll_up() {
 #ifdef _WIN32
-    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, 120, 0);
+    send_mouse_input(MOUSEEVENTF_WHEEL, WHEEL_DELTA);
 #else
     Display *d = XOpenDisplay(0);
     XTestFakeButtonEvent(d, 4, True, CurrentTime);
@@ -63,7 +74,7 @@ EXPORT void scroll_up() {
 
 EXPORT void scroll_down() {
 #ifdef _WIN32
-    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, (DWORD)-120, 0);
+    send_mouse_input(MOUSEEVENTF_WHEEL, (DWORD)-WHEEL_DELTA);
 #else
     Display *d = XOpenDisplay(0);
     XTestFakeButtonEvent(d, 5, True, CurrentTime);

@@ -18,6 +18,16 @@ try:
     time.sleep(1)
     mouse_dll.click_mouse()
     print("Click call completed.")
+    
+    print("Scrolling up in 1 second...")
+    time.sleep(1)
+    mouse_dll.scroll_up()
+    print("Scroll up call completed.")
+    
+    print("Scrolling down in 1 second...")
+    time.sleep(1)
+    mouse_dll.scroll_down()
+    print("Scroll down call completed.")
 
 except Exception as e:
     print(f"Error: {e}")
