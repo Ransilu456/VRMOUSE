@@ -61,12 +61,18 @@ def main():
 
     last_action_time = 0
     mouse_active = False
-    show_mask = False
-    show_settings = False
     ripples = []
     
+    # Preview Modes
+    class Mode:
+        APPLICATION = 0
+        MASK = 1
+        TRAINING = 2
+        
+    current_mode = Mode.APPLICATION
+    
     print("--- MediaPipe Virtual Mouse Pro ---")
-    print("Keys: [T] Toggle Control, [M] Toggle Mask, [S] Toggle Settings, [ESC] Quit")
+    print("Keys: [T] Toggle Control, [M] Cycle Preview Modes, [ESC] Quit")
 
     while True:
         ret, frame = cap.read()
@@ -75,7 +81,13 @@ def main():
         h_frame, w_frame, _ = frame.shape
         
         # 1. Engine Processing
-        action, cursor_pos, frame, mask = engine.process(frame)
+        out = engine.process(frame)
+        action = out["action"]
+        cursor_pos = out["cursor_pos"]
+        frame = out["frame"]
+        mask = out["mask"]
+        landmarks = out["landmarks"]
+        results = out["results"]
         
         # 2. Ripple Logic
         new_ripples = []
@@ -111,22 +123,42 @@ def main():
                     if mouse_dll: mouse_dll.scroll_down()
                     last_action_time = now
 
-        # 5. UI Overlays
-        if show_mask:
+        # 5. UI Overlays based on Mode
+        if current_mode == Mode.MASK:
             mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-            frame = cv2.addWeighted(frame, 0.7, mask_rgb, 0.3, 0)
+            frame = cv2.addWeighted(frame, 0.4, mask_rgb, 0.6, 0)
+            cv2.putText(frame, "MASK PREVIEW", (w_frame - 150, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        elif current_mode == Mode.TRAINING:
+            # Show black screen with skeleton for clear feature visualization
+            skeleton = engine.get_skeleton_overlay(frame, results)
+            frame = cv2.addWeighted(frame, 0.3, skeleton, 0.7, 0)
+            
+            if landmarks:
+                # Visualize normalized features (Wrist-relative lines)
+                wrist = landmarks.landmark[0]
+                wx, wy = int(wrist.x * w_frame), int(wrist.y * h_frame)
+                for i, lm in enumerate(landmarks.landmark):
+                    lx, ly = int(lm.x * w_frame), int(lm.y * h_frame)
+                    cv2.line(frame, (wx, wy), (lx, ly), (0, 255, 255), 1)
+                cv2.circle(frame, (wx, wy), 8, (0, 0, 255), -1)
+
+            cv2.putText(frame, "TRAINING PREVIEW (FEATURE VIEW)", (w_frame - 300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
         # HUD
-        draw_glass_panel(frame, 10, 10, 260, 110)
+        draw_glass_panel(frame, 10, 10, 260, 130)
         status_text = "ACTIVE" if mouse_active else "PAUSED"
         status_color = (0, 200, 0) if mouse_active else (0, 0, 200)
         cv2.putText(frame, f"MOUSE: {status_text}", (25, 40), cv2.FONT_HERSHEY_DUPLEX, 0.7, status_color, 1)
         
-        mode_label = "AI MODEL" if engine.model else "HEURISTIC"
-        cv2.putText(frame, f"ENGINE: {mode_label}", (25, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (50, 50, 50), 1)
+        mode_names = ["APPLICATION", "MASK", "TRAINING"]
+        cv2.putText(frame, f"VIEW: {mode_names[current_mode]}", (25, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        
+        engine_label = "AI MODEL" if engine.model else "HEURISTIC"
+        cv2.putText(frame, f"ENGINE: {engine_label}", (25, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (50, 50, 50), 1)
         
         act_col = (255, 100, 0) if action != "none" else (150, 150, 150)
-        cv2.putText(frame, f"ACTION: {action.upper()}", (25, 95), cv2.FONT_HERSHEY_DUPLEX, 0.6, act_col, 1)
+        cv2.putText(frame, f"ACTION: {action.upper()}", (25, 115), cv2.FONT_HERSHEY_DUPLEX, 0.6, act_col, 1)
 
         cv2.rectangle(frame, (move_box_x, move_box_y), (move_box_x+move_box_w, move_box_y+move_box_h), (255, 200, 0), 1)
         
@@ -134,7 +166,8 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == 27: break
         elif key == ord('t'): mouse_active = not mouse_active
-        elif key == ord('m'): show_mask = not show_mask
+        elif key == ord('m'): 
+            current_mode = (current_mode + 1) % 3
         elif key == ord('s'): show_settings = not show_settings
 
     cap.release()

@@ -72,6 +72,22 @@ class MediaPipeEngine:
             else: fingers.append(False)
         return fingers
 
+    def extract_features(self, hand_landmarks):
+        """Extracts normalized features for the AI model: (x-wrist, y-wrist) for all 21 points"""
+        features = []
+        w_x, w_y = hand_landmarks.landmark[0].x, hand_landmarks.landmark[0].y
+        for lm in hand_landmarks.landmark:
+            features.extend([lm.x - w_x, lm.y - w_y])
+        return features
+
+    def get_skeleton_overlay(self, frame, results):
+        """Returns a frame with only the skeleton/landmarks drawn on a black background"""
+        skeleton = np.zeros_like(frame)
+        if results and results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                self.mp_draw.draw_landmarks(skeleton, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+        return skeleton
+
     def _create_better_mask(self, hand_landmarks, h, w):
         mask = np.zeros((h, w), dtype=np.uint8)
         points = [(int(lm.x * w), int(lm.y * h)) for lm in hand_landmarks.landmark]
@@ -97,46 +113,54 @@ class MediaPipeEngine:
         cursor_pos = None
         h_frame, w_frame, _ = frame.shape
         mask = np.zeros((h_frame, w_frame), dtype=np.uint8)
+        landmarks_raw = None
         
         if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                mask = self._create_better_mask(hand_landmarks, h_frame, w_frame)
-                self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+            # We only process the first hand for now
+            hand_landmarks = results.multi_hand_landmarks[0]
+            landmarks_raw = hand_landmarks
+            
+            mask = self._create_better_mask(hand_landmarks, h_frame, w_frame)
+            self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+            
+            lm_list = [[id, int(lm.x * w_frame), int(lm.y * h_frame)] 
+                        for id, lm in enumerate(hand_landmarks.landmark)]
+            cursor_pos = (lm_list[8][1], lm_list[8][2]) 
+
+            # AI DECISION LOGIC
+            if self.model:
+                try:
+                    features = self.extract_features(hand_landmarks)
+                    # AI control - Exclusive usage if model is active
+                    action = self.model.predict([features])[0]
+                except Exception as e:
+                    print(f"!!! [Engine] ML Prediction Error: {e}")
+            else:
+                # HEURISTIC CONTROL (Only if NO model is loaded)
+                fingers = self.get_fingers_up(lm_list)
+                d_ti = self.calculate_distance((lm_list[4][1], lm_list[4][2]), (lm_list[8][1], lm_list[8][2]))
+                d_im = self.calculate_distance((lm_list[8][1], lm_list[8][2]), (lm_list[12][1], lm_list[12][2]))
+                thresh = self.config['thresholds']
                 
-                lm_list = [[id, int(lm.x * w_frame), int(lm.y * h_frame)] 
-                           for id, lm in enumerate(hand_landmarks.landmark)]
-                cursor_pos = (lm_list[8][1], lm_list[8][2]) 
+                if all(fingers): action = "none"
+                elif fingers[0] and fingers[1] and d_ti < thresh['click_distance']: action = "left_click"
+                elif fingers[1] and fingers[2] and d_im < thresh['right_click_distance']: action = "right_click"
+                elif fingers[1]:
+                    action = "move"
+                    if fingers[2]: # Scroll mode
+                        current_y = lm_list[8][2]
+                        if self.prev_y != 0:
+                            if self.prev_y - current_y > thresh['scroll_distance']: action = "scroll_up"
+                            elif current_y - self.prev_y > thresh['scroll_distance']: action = "scroll_down"
+                        self.prev_y = current_y
+                    else: self.prev_y = 0
+                else: self.prev_y = 0
 
-                # AI DECISION LOGIC
-                if self.model:
-                    try:
-                        features = []
-                        w_x, w_y = hand_landmarks.landmark[0].x, hand_landmarks.landmark[0].y
-                        for lm in hand_landmarks.landmark:
-                            features.extend([lm.x - w_x, lm.y - w_y])
-                        
-                        # AI control - Exclusive usage if model is active
-                        action = self.model.predict([features])[0]
-                    except Exception as e:
-                        print(f"!!! [Engine] ML Prediction Error: {e}")
-                else:
-                    # HEURISTIC CONTROL (Only if NO model is loaded)
-                    fingers = self.get_fingers_up(lm_list)
-                    d_ti = self.calculate_distance((lm_list[4][1], lm_list[4][2]), (lm_list[8][1], lm_list[8][2]))
-                    d_im = self.calculate_distance((lm_list[8][1], lm_list[8][2]), (lm_list[12][1], lm_list[12][2]))
-                    thresh = self.config['thresholds']
-                    
-                    if all(fingers): action = "none"
-                    elif fingers[0] and fingers[1] and d_ti < thresh['click_distance']: action = "left_click"
-                    elif fingers[1] and fingers[2] and d_im < thresh['right_click_distance']: action = "right_click"
-                    elif fingers[1]:
-                        action = "move"
-                        if fingers[2]: # Scroll mode
-                            current_y = lm_list[8][2]
-                            if self.prev_y != 0:
-                                if self.prev_y - current_y > thresh['scroll_distance']: action = "scroll_up"
-                                elif current_y - self.prev_y > thresh['scroll_distance']: action = "scroll_down"
-                            self.prev_y = current_y
-                        else: self.prev_y = 0
-
-        return action, cursor_pos, frame, mask
+        return {
+            "action": action,
+            "cursor_pos": cursor_pos,
+            "frame": frame,
+            "mask": mask,
+            "landmarks": landmarks_raw,
+            "results": results
+        }

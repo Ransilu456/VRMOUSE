@@ -5,6 +5,7 @@ import os
 import time
 import numpy as np
 from train_model import train
+from gesture_engine import MediaPipeEngine
 
 def draw_glass_panel(img, x, y, w, h, opacity=0.4):
     """Draws a semi-transparent 'glass' panel for the HUD"""
@@ -27,8 +28,7 @@ def get_sample_counts(data_file):
 
 def main():
     cap = cv2.VideoCapture(0)
-    mp_hands = mp.solutions.hands
-    hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7)
+    engine = MediaPipeEngine()
     
     labels = ["none", "move", "left_click", "right_click", "scroll_up", "scroll_down"]
     current_label_idx = 0
@@ -50,8 +50,6 @@ def main():
         
         frame = cv2.flip(frame, 1)
         h_frame, w_frame, _ = frame.shape
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(img_rgb)
         
         counts = get_sample_counts(data_file)
         
@@ -62,6 +60,9 @@ def main():
         
         total_samples = sum(counts.values())
         cv2.putText(frame, f"TOTAL SAMPLES: {total_samples}", (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (50, 50, 50), 1)
+
+        # Mask Overlay Toggle
+        show_mask = True # Always on in data collector for transparency
 
         # 2. UI - Side Menu
         draw_glass_panel(frame, w_frame - 200, 10, 190, 220, opacity=0.6)
@@ -78,20 +79,25 @@ def main():
         cv2.putText(frame, "[1-6] Select Action  |  [R] Toggle Record", (20, h_frame - 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,0,0), 1)
         cv2.putText(frame, "[T] Train Model      |  [ESC] Quit", (20, h_frame - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,0,0), 1)
 
-        # 4. Processing Hand & Recording
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                mp.solutions.drawing_utils.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        # 4. Processing Hand & Recording using the Engine
+        out = engine.process(frame)
+        frame = out["frame"]
+        mask = out["mask"]
+        landmarks = out["landmarks"]
+        
+        if landmarks:
+            if show_mask:
+                mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+                frame = cv2.addWeighted(frame, 0.6, mask_rgb, 0.4, 0)
+            
+            if recording:
+                wrist = landmarks.landmark[0]
+                features = engine.extract_features(landmarks)
+                row = [labels[current_label_idx]] + features
                 
-                if recording:
-                    wrist = hand_landmarks.landmark[0]
-                    row = [labels[current_label_idx]]
-                    for lm in hand_landmarks.landmark:
-                        row.extend([lm.x - wrist.x, lm.y - wrist.y])
-                    
-                    with open(data_file, 'a', newline='') as f:
-                        writer = csv.writer(f)
-                        writer.writerow(row)
+                with open(data_file, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(row)
 
         cv2.imshow("Gesture Studio", frame)
         

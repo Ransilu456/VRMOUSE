@@ -20,6 +20,7 @@ def main():
     model_path = os.path.join(script_dir, "gesture_model.pkl")
     
     cv2.namedWindow("AI Trainer")
+    cap = cv2.VideoCapture(0)
     
     status_msg = "Ready to train"
     last_acc = 0
@@ -65,6 +66,31 @@ def main():
         cv2.putText(img, f"STATUS: {status_msg}", (70, 510), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
         if last_acc > 0:
             cv2.putText(img, f"MODEL ACCURACY: {last_acc:.2%}", (70, 535), cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 255, 0), 1)
+
+        # Live Validation Preview (Small Box)
+        if last_acc > 0:
+            ret, frame = cap.read()
+            if ret:
+                frame = cv2.flip(frame, 1)
+                from gesture_engine import MediaPipeEngine
+                # Temporary engine for validation
+                if not hasattr(main, 'val_engine'):
+                    from gesture_engine import MediaPipeEngine
+                    main.val_engine = MediaPipeEngine()
+                
+                # Load the newly trained model into the validation engine
+                if os.path.exists(model_path):
+                    main.val_engine.model = joblib.load(model_path)
+                
+                out = main.val_engine.process(frame)
+                val_frame = out["frame"]
+                action = out["action"]
+                
+                # Resize for small preview
+                small_val = cv2.resize(val_frame, (200, 150))
+                img[320:470, 520:720] = small_val
+                cv2.rectangle(img, (520, 320), (720, 470), (0, 255, 0), 2)
+                cv2.putText(img, f"LIVE PREVIEW: {action.upper()}", (520, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
         cv2.putText(img, "[T] Train Model  |  [Q] Quit", (300, 580), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
 
@@ -113,6 +139,7 @@ def main():
                     status_msg = f"TRAIN FAILED: {e}"
             training = False
 
+    cap.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
