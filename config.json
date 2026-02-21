@@ -1,0 +1,30 @@
+{
+    "mediapipe": {
+        "min_detection_confidence": 0.7,
+        "min_tracking_confidence": 0.7,
+        "max_num_hands": 1
+    },
+    "thresholds": {
+        "click_distance": 30,
+        "right_click_distance": 40,
+        "scroll_distance": 15
+    },
+    "smoothing": {
+        "min_cutoff": 0.5,
+        "beta": 0.05
+    },
+    "screen": {
+        "width": 1920,
+        "height": 1080
+    },
+    "tracking_box": {
+        "x": 100,
+        "y": 100,
+        "w": 400,
+        "h": 300
+    },
+    "cooldowns": {
+        "click": 0.5,
+        "scroll": 0.1
+    }
+}
