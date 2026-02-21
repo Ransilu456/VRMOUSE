@@ -1,121 +1,142 @@
 import cv2
-import numpy as np
+import mediapipe as mp
 import math
+import numpy as np
 
-class GestureEngine:
+class MediaPipeEngine:
     def __init__(self):
-        # MOG2 for background isolation
-        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=False)
-        self.kernel = np.ones((5, 5), np.uint8)
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7
+        )
+        self.mp_draw = mp.solutions.drawing_utils
         
-        # Skin color ranges (calibrated for better robustness)
-        self.lower_hsv = np.array([0, 20, 80], dtype=np.uint8)
-        self.upper_hsv = np.array([25, 255, 255], dtype=np.uint8)
-        
-        # Debounce state
-        self.gesture_history = []
-        self.history_size = 5
+        # Fingertip landmark IDs
+        self.tip_ids = [4, 8, 12, 16, 20] # Thumb, Index, Middle, Ring, Pinky
+        self.prev_y = 0 # For scroll tracking
 
-    def get_skin_mask(self, frame):
-        # 1. Background subtraction
-        fg_mask = self.bg_subtractor.apply(frame)
-        
-        # 2. Skin thresholding (HSV)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask_hsv = cv2.inRange(hsv, np.array([0, 15, 60]), np.array([30, 255, 255]))
-        
-        # 3. YCrCb skin detection
-        ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
-        mask_ycrcb = cv2.inRange(ycrcb, np.array([0, 133, 77]), np.array([255, 173, 127]))
-        
-        # Union of skin masks, AND with foreground
-        combined_skin = cv2.bitwise_or(mask_hsv, mask_ycrcb)
-        mask = cv2.bitwise_and(combined_skin, fg_mask)
-        
-        # Clean up noise
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-        mask = cv2.dilate(mask, self.kernel, iterations=1)
+    def calculate_distance(self, p1, p2):
+        """Calculate Euclidean distance between two (x,y) tuples"""
+        return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
-        return mask
+    def get_fingers_up(self, lm_list):
+        """Returns a list of 5 booleans [Thumb, Index, Middle, Ring, Pinky]"""
+        fingers = []
+        if len(lm_list) != 21:
+            return [False]*5
 
-    def calculate_angle(self, p1, p2, p3):
-        """Calculate angle at p2 given points p1, p2, p3"""
-        a = math.sqrt((p2[0]-p3[0])**2 + (p2[1]-p3[1])**2)
-        b = math.sqrt((p1[0]-p3[0])**2 + (p1[1]-p3[1])**2)
-        c = math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
-        try:
-            angle = math.acos((a**2 + c**2 - b**2) / (2*a*c)) * 180 / math.pi
-        except:
-            angle = 180
-        return angle
+        # Thumb: compare tip (4) x with IP (3) x (Assuming Right Hand for now)
+        # To make it robust for both, we can check relative to wrist or another point
+        if lm_list[self.tip_ids[0]][1] > lm_list[self.tip_ids[0] - 1][1]:
+            fingers.append(True)
+        else:
+            fingers.append(False)
+
+        # 4 Fingers: compare tip y with PIP y (landmarks 6, 10, 14, 18)
+        for id in range(1, 5):
+            if lm_list[self.tip_ids[id]][2] < lm_list[self.tip_ids[id] - 2][2]:
+                fingers.append(True)
+            else:
+                fingers.append(False)
+                
+        return fingers
 
     def process(self, frame):
-        mask = self.get_skin_mask(frame)
-        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-        if not contours:
-            return None, None, "none", mask
-
-        # Largest contour is the hand
-        hand_contour = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(hand_contour) < 1500:
-            return None, None, "none", mask
-
-        # Smooth contour
-        epsilon = 0.01 * cv2.arcLength(hand_contour, True)
-        hand_contour = cv2.approxPolyDP(hand_contour, epsilon, True)
-
-        # 1. Find Palm Center
-        dist_transform = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-        _, max_val, _, max_loc = cv2.minMaxLoc(dist_transform)
-        palm_center = max_loc
-        palm_radius = int(max_val)
-
-        # 2. Extract Features (Distance of extreme points from palm center)
-        # We'll take 10 points around the hull to create a signature
-        hull_pts = cv2.convexHull(hand_contour)
+        """
+        Process the frame and return:
+        - action (string: 'move', 'left_click', 'right_click', 'scroll_up', 'scroll_down', 'none')
+        - cursor_pos (tuple: (x, y) coordinates of the index finger)
+        - frame (the image with landmarks drawn)
+        """
+        # Convert BGR to RGB for MediaPipe
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(img_rgb)
         
-        # Calculate distances from palm center to all hull points
-        distances = []
-        for pt in hull_pts:
-            d = np.sqrt((pt[0][0] - palm_center[0])**2 + (pt[0][1] - palm_center[1])**2)
-            distances.append(d)
+        action = "none"
+        cursor_pos = None
         
-        # Normalize and sample fixed number of features for AI
-        distances.sort(reverse=True)
-        # Top 10 furthest points (fingertips and major knuckle points)
-        raw_features = distances[:10]
-        if len(raw_features) < 10:
-            raw_features.extend([0] * (10 - len(raw_features)))
+        # Create a black mask to simulate the old skin mask
+        h_frame, w_frame, _ = frame.shape
+        mask = np.zeros((h_frame, w_frame), dtype=np.uint8)
         
-        # Normalize by the max feature distance (longest fingertip)
-        # This is much more stable than the palm radius which fluctuates with mask holes
-        max_dist = raw_features[0] if raw_features[0] > 0 else 1
-        normalized_features = np.array(raw_features) / max_dist
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                # 1. Draw Landmarks
+                self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+                
+                # 2. Extract landmark coordinates
+                h, w, c = frame.shape
+                lm_list = []
+                x_list, y_list = [], []
+                
+                for id, lm in enumerate(hand_landmarks.landmark):
+                    cx, cy = int(lm.x * w), int(lm.y * h)
+                    lm_list.append([id, cx, cy])
+                    x_list.append(cx)
+                    y_list.append(cy)
+                
+                # 3. Draw Bounding Box (Flowchart requirement)
+                # xmin, xmax = min(x_list), max(x_list)
+                # ymin, ymax = min(y_list), max(y_list)
+                # cv2.rectangle(frame, (xmin - 20, ymin - 20), (xmax + 20, ymax + 20), (0, 255, 0), 2)
+                
+                # Draw hand hull to simulate a mask
+                hull_points = np.array([[cx, cy] for cx, cy in zip(x_list, y_list)], dtype=np.int32)
+                if len(hull_points) > 0:
+                    hull = cv2.convexHull(hull_points)
+                    cv2.fillConvexPoly(mask, hull, 255)
+                
+                # Use Index Finger tip for cursor positioning
+                cursor_pos = (lm_list[8][1], lm_list[8][2]) 
 
-        # 3. Visualization
-        cv2.circle(frame, palm_center, palm_radius, (255, 0, 0), 2)
-        cv2.circle(frame, palm_center, 5, (0, 0, 255), -1)
-        
-        # Draw some of the hull points
-        for i, pt in enumerate(hull_pts[:10]):
-            cv2.circle(frame, tuple(pt[0]), 5, (0, 255, 0), -1)
+                # 4. Detect which fingers are UP
+                fingers = self.get_fingers_up(lm_list)
+                # print(fingers) # [Thumb, Index, Middle, Ring, Pinky]
+                
+                # Calculate distances between specific fingertips
+                # Thumb (4) and Index (8)
+                dist_thumb_index = self.calculate_distance((lm_list[4][1], lm_list[4][2]), (lm_list[8][1], lm_list[8][2]))
+                # Index (8) and Middle (12)
+                dist_index_middle = self.calculate_distance((lm_list[8][1], lm_list[8][2]), (lm_list[12][1], lm_list[12][2]))
 
-        # Cursor Position (Stable fingertip tracking)
-        # Instead of just the raw min pixels, average the top 3 extreme points 
-        # that are furthest from palm to stay on the main fingertip
-        hull_list = [tuple(pt[0]) for pt in hull_pts]
-        # Sort by distance from palm descending
-        hull_list.sort(key=lambda p: np.sqrt((p[0]-palm_center[0])**2 + (p[1]-palm_center[1])**2), reverse=True)
-        
-        # Filter points that are actually in the upper half of the hand relative to palm
-        tops = [p for p in hull_list[:3] if p[1] < palm_center[1]]
-        if not tops: tops = [hull_list[0]] # fallback
-        
-        # Average the top points and pick the highest one for cursor
-        avg_x = sum(p[0] for p in tops) / len(tops)
-        avg_y = sum(p[1] for p in tops) / len(tops)
-        
-        cursor_pos = (int(avg_x), int(avg_y))
+                # --- FLOWCHART LOGIC IMPLEMENTATION ---
+                
+                # RULE: If all Five Fingers are up -> No Action
+                if fingers[0] and fingers[1] and fingers[2] and fingers[3] and fingers[4]:
+                    action = "none"
+                    
+                # RULE: If both Thumb and Index Fingers are up AND length between them is below 30px
+                elif fingers[0] and fingers[1] and dist_thumb_index < 30:
+                    action = "left_click"
+                    cv2.circle(frame, (lm_list[8][1], lm_list[8][2]), 15, (0, 255, 0), cv2.FILLED)
+                    
+                # RULE: If both Index and Middle Fingers are up AND length between them is below 40px
+                elif fingers[1] and fingers[2] and dist_index_middle < 40:
+                    action = "right_click"
+                    cv2.circle(frame, (lm_list[8][1], lm_list[8][2]), 15, (0, 0, 255), cv2.FILLED)
+                    
+                # RULE: If index Finger is up OR if both Index and middle Fingers are up -> Move Mouse
+                # Note: The "move" state is the default fallback if no smaller distance clicks trigger
+                elif (fingers[1] and not fingers[2]) or (fingers[1] and fingers[2]):
+                    action = "move"
+                    # Add Scrolling sub-logic
+                    # If both Index and middle are up and moved Towards up/down
+                    if fingers[1] and fingers[2]:
+                        current_y = lm_list[8][2]
+                        if self.prev_y != 0:
+                            # If y value decreases significantly, hand is moving UP screen
+                            if self.prev_y - current_y > 15: 
+                                action = "scroll_up"
+                            # If y value increases significantly, hand is moving DOWN screen
+                            elif current_y - self.prev_y > 15:
+                                action = "scroll_down"
+                        self.prev_y = current_y
+                    else:
+                        # Reset scroll reference when not in that 2-finger mode
+                        self.prev_y = 0
+                        
 
-        return cursor_pos, normalized_features, palm_center, mask
+        return action, cursor_pos, frame, mask

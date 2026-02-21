@@ -48,3 +48,27 @@ EXPORT void double_click_mouse() {
     click_mouse();
     click_mouse();
 }
+
+EXPORT void scroll_up() {
+#ifdef _WIN32
+    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, 120, 0);
+#else
+    Display *d = XOpenDisplay(0);
+    XTestFakeButtonEvent(d, 4, True, CurrentTime);
+    XTestFakeButtonEvent(d, 4, False, CurrentTime);
+    XFlush(d);
+    XCloseDisplay(d);
+#endif
+}
+
+EXPORT void scroll_down() {
+#ifdef _WIN32
+    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, (DWORD)-120, 0);
+#else
+    Display *d = XOpenDisplay(0);
+    XTestFakeButtonEvent(d, 5, True, CurrentTime);
+    XTestFakeButtonEvent(d, 5, False, CurrentTime);
+    XFlush(d);
+    XCloseDisplay(d);
+#endif
+}
